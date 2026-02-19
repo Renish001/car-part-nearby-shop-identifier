@@ -20,7 +20,7 @@ SHOPS_CSV = os.path.join(BASE_DIR, "coimbatore_spare_parts_shops.csv")
 MODEL_PATH = os.path.join(BASE_DIR, "model.pth")
 
 # ===============================
-# Load Parts CSV
+# Load Parts CSV Safely
 # ===============================
 if not os.path.exists(PARTS_CSV):
     st.error("car parts.csv not found")
@@ -32,13 +32,22 @@ if "labels" not in df.columns:
     st.error("Column 'labels' missing in car parts.csv")
     st.stop()
 
-# IMPORTANT: Keep class order consistent
-classes = sorted(df["labels"].unique())
+# Clean labels
+df["labels"] = df["labels"].astype(str).str.strip()
+df = df[df["labels"] != ""]
+df = df[df["labels"].notna()]
+
+classes = sorted(df["labels"].unique().tolist())
+
+if len(classes) == 0:
+    st.error("No valid labels found in dataset.")
+    st.stop()
+
 class_to_idx = {cls: i for i, cls in enumerate(classes)}
 idx_to_class = {i: cls for cls, i in class_to_idx.items()}
 
 # ===============================
-# Load Model (CACHED)
+# Load Model (Cached Properly)
 # ===============================
 @st.cache_resource
 def load_model():
@@ -83,6 +92,7 @@ if not os.path.exists(SHOPS_CSV):
 shops_df = pd.read_csv(SHOPS_CSV)
 
 required_cols = ["name", "latitude", "longitude"]
+
 for col in required_cols:
     if col not in shops_df.columns:
         st.error(f"Missing column: {col}")
@@ -113,7 +123,7 @@ if uploaded_file:
         probabilities = F.softmax(outputs, dim=1)
         confidence, predicted = torch.max(probabilities, 1)
 
-    predicted_part = idx_to_class[predicted.item()]
+    predicted_part = idx_to_class.get(predicted.item(), "Unknown")
     confidence_score = confidence.item() * 100
 
     st.success(
