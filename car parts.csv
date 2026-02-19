@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 class index,filepaths,labels,data set
 0,train/AIR COMPRESSOR/001.jpg,AIR COMPRESSOR,train
 0,train/AIR COMPRESSOR/002.jpg,AIR COMPRESSOR,train
@@ -18480,4 +18479,4 @@ class index,filepaths,labels,data set
 49,valid/WINDOW REGULATOR/3.jpg,WINDOW REGULATOR,valid
 49,valid/WINDOW REGULATOR/4.jpg,WINDOW REGULATOR,valid
 49,valid/WINDOW REGULATOR/5.jpg,WINDOW REGULATOR,valid
->>>>>>> f03c02f0cd366e62466121a591648f4cc635b426
+
