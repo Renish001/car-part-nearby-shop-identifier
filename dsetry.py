@@ -36,7 +36,7 @@ if not os.path.exists(MODEL_PATH):
     st.stop()
 
 checkpoint = torch.load(MODEL_PATH, map_location=torch.device("cpu"))
-model.load_state_dict(checkpoint['model_state_dict'], strict=False)
+model.load_state_dict(checkpoint, strict=False)
 model.eval()
 
 # === Image Transform ===
