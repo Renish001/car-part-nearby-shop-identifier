@@ -3,70 +3,67 @@ import torch
 import torch.nn as nn
 import torchvision.transforms as transforms
 from torchvision import models
+import torch.nn.functional as F
 import pandas as pd
 from PIL import Image
 import os
 from geopy.distance import geodesic
 from geopy.geocoders import Nominatim
 
-# ==============================
-# Base Directory
-# ==============================
+# ===============================
+# Base Paths
+# ===============================
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 PARTS_CSV = os.path.join(BASE_DIR, "car parts.csv")
 SHOPS_CSV = os.path.join(BASE_DIR, "coimbatore_spare_parts_shops.csv")
 MODEL_PATH = os.path.join(BASE_DIR, "model.pth")
 
-# ==============================
+# ===============================
 # Load Parts CSV
-# ==============================
+# ===============================
 if not os.path.exists(PARTS_CSV):
-    st.error(f"Parts dataset not found at {PARTS_CSV}")
+    st.error("car parts.csv not found")
     st.stop()
 
 df = pd.read_csv(PARTS_CSV)
 
 if "labels" not in df.columns:
-    st.error("Column 'labels' not found in car parts.csv")
+    st.error("Column 'labels' missing in car parts.csv")
     st.stop()
 
-class_to_idx = {name: idx for idx, name in enumerate(df["labels"].unique())}
-idx_to_class = {v: k for k, v in class_to_idx.items()}
+# IMPORTANT: Keep class order consistent
+classes = sorted(df["labels"].unique())
+class_to_idx = {cls: i for i, cls in enumerate(classes)}
+idx_to_class = {i: cls for cls, i in class_to_idx.items()}
 
-# ==============================
-# Load Model Safely
-# ==============================
+# ===============================
+# Load Model (CACHED)
+# ===============================
+@st.cache_resource
+def load_model():
+    model = models.resnet18(weights=None)
+    model.fc = nn.Linear(model.fc.in_features, len(classes))
+
+    checkpoint = torch.load(MODEL_PATH, map_location="cpu")
+
+    if isinstance(checkpoint, dict) and "model_state_dict" in checkpoint:
+        model.load_state_dict(checkpoint["model_state_dict"])
+    else:
+        model.load_state_dict(checkpoint)
+
+    model.eval()
+    return model
+
 if not os.path.exists(MODEL_PATH):
-    st.error(f"Model file not found at {MODEL_PATH}")
+    st.error("model.pth not found")
     st.stop()
 
-model = models.resnet18(weights=None)
+model = load_model()
 
-checkpoint = torch.load(MODEL_PATH, map_location=torch.device("cpu"))
-
-# Handle different saving formats
-if isinstance(checkpoint, dict) and "model_state_dict" in checkpoint:
-    state_dict = checkpoint["model_state_dict"]
-else:
-    state_dict = checkpoint
-
-# Remove FC layer weights (to prevent size mismatch)
-filtered_state_dict = {
-    k: v for k, v in state_dict.items()
-    if not k.startswith("fc.")
-}
-
-model.load_state_dict(filtered_state_dict, strict=False)
-
-# Recreate final layer properly
-model.fc = nn.Linear(model.fc.in_features, len(class_to_idx))
-
-model.eval()
-
-# ==============================
+# ===============================
 # Image Transform
-# ==============================
+# ===============================
 transform = transforms.Compose([
     transforms.Resize((224, 224)),
     transforms.ToTensor(),
@@ -76,36 +73,33 @@ transform = transforms.Compose([
     )
 ])
 
-# ==============================
+# ===============================
 # Load Shops CSV Safely
-# ==============================
+# ===============================
 if not os.path.exists(SHOPS_CSV):
-    st.error(f"Shop dataset not found at {SHOPS_CSV}")
+    st.error("Shop CSV not found")
     st.stop()
 
 shops_df = pd.read_csv(SHOPS_CSV)
 
-required_columns = ["name", "latitude", "longitude"]
-
-for col in required_columns:
+required_cols = ["name", "latitude", "longitude"]
+for col in required_cols:
     if col not in shops_df.columns:
-        st.error(f"Missing column '{col}' in shop dataset")
+        st.error(f"Missing column: {col}")
         st.stop()
 
-# Convert coordinates safely
 shops_df["latitude"] = pd.to_numeric(shops_df["latitude"], errors="coerce")
 shops_df["longitude"] = pd.to_numeric(shops_df["longitude"], errors="coerce")
-
 shops_df = shops_df.dropna(subset=["latitude", "longitude"])
 
-# ==============================
+# ===============================
 # Streamlit UI
-# ==============================
+# ===============================
 st.title("🔍 Car Part Identifier & Nearby Shop Finder")
 
 uploaded_file = st.file_uploader(
-    "📸 Upload a car part image",
-    type=["jpg", "png", "jpeg"]
+    "📸 Upload Car Part Image",
+    type=["jpg", "jpeg", "png"]
 )
 
 if uploaded_file:
@@ -115,18 +109,22 @@ if uploaded_file:
     input_tensor = transform(image).unsqueeze(0)
 
     with torch.no_grad():
-        output = model(input_tensor)
-        _, predicted = torch.max(output, 1)
-        predicted_part = idx_to_class.get(predicted.item(), "Unknown")
+        outputs = model(input_tensor)
+        probabilities = F.softmax(outputs, dim=1)
+        confidence, predicted = torch.max(probabilities, 1)
 
-    st.success(f"🧩 Predicted Car Part: **{predicted_part}**")
+    predicted_part = idx_to_class[predicted.item()]
+    confidence_score = confidence.item() * 100
 
-    # ==============================
-    # Location Input
-    # ==============================
-    user_location = st.text_input(
-        "📍 Enter your location (e.g., Coimbatore)"
+    st.success(
+        f"🧩 Predicted: **{predicted_part}** "
+        f"(Confidence: {confidence_score:.2f}%)"
     )
+
+    # ===============================
+    # Location Input
+    # ===============================
+    user_location = st.text_input("📍 Enter your location (e.g., Coimbatore)")
 
     if user_location:
         try:
@@ -144,9 +142,8 @@ if uploaded_file:
                     "lon": location.longitude
                 }]))
 
-                st.markdown("### 🛠️ Nearby Repair Shops (within 80 km)")
-
-                nearby_shops = []
+                st.markdown("### 🛠 Nearby Shops (within 80 km)")
+                nearby = []
 
                 for _, shop in shops_df.iterrows():
                     try:
@@ -155,33 +152,30 @@ if uploaded_file:
                             float(shop["longitude"])
                         )
 
-                        distance_km = geodesic(
+                        distance = geodesic(
                             user_coords,
                             shop_coords
                         ).km
 
-                        if distance_km <= 80:
-                            nearby_shops.append({
+                        if distance <= 80:
+                            nearby.append({
                                 "name": shop["name"],
-                                "distance": round(distance_km, 2)
+                                "distance": round(distance, 2)
                             })
 
                     except Exception:
                         continue
 
-                if nearby_shops:
-                    for shop in sorted(
-                        nearby_shops,
-                        key=lambda x: x["distance"]
-                    ):
+                if nearby:
+                    for shop in sorted(nearby, key=lambda x: x["distance"]):
                         st.markdown(
                             f"- **{shop['name']}** — {shop['distance']} km"
                         )
                 else:
-                    st.info("No nearby shops found within 80 km.")
+                    st.info("No shops found within 80 km.")
 
             else:
-                st.error("Couldn't find your location. Try a more specific name.")
+                st.error("Location not found. Try a more specific place.")
 
         except Exception:
-            st.error("Location service unavailable. Please try again later.")
+            st.error("Geolocation service unavailable. Try again later.")
