@@ -12,7 +12,6 @@ from geopy.geocoders import Nominatim
 # === Base Directory ===
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-# === Correct Relative Paths (IMPORTANT) ===
 PARTS_CSV = os.path.join(BASE_DIR, "car parts.csv")
 SHOPS_CSV = os.path.join(BASE_DIR, "coimbatore_spare_parts_shops.csv")
 MODEL_PATH = os.path.join(BASE_DIR, "model.pth")
@@ -36,7 +35,13 @@ if not os.path.exists(MODEL_PATH):
     st.stop()
 
 checkpoint = torch.load(MODEL_PATH, map_location=torch.device("cpu"))
-model.load_state_dict(checkpoint, strict=False)
+
+# If checkpoint contains model_state_dict
+if isinstance(checkpoint, dict) and "model_state_dict" in checkpoint:
+    model.load_state_dict(checkpoint["model_state_dict"], strict=False)
+else:
+    model.load_state_dict(checkpoint, strict=False)
+
 model.eval()
 
 # === Image Transform ===
@@ -49,16 +54,26 @@ transform = transforms.Compose([
     )
 ])
 
-# === Load shop CSV ===
+# === Load shop CSV safely ===
 if not os.path.exists(SHOPS_CSV):
     st.error(f"Shop dataset not found at {SHOPS_CSV}")
     st.stop()
 
 shops_df = pd.read_csv(SHOPS_CSV)
 
-if "latitude" not in shops_df.columns or "longitude" not in shops_df.columns:
-    st.error("Missing 'latitude' or 'longitude' columns in shop dataset.")
-    st.stop()
+required_columns = ["name", "latitude", "longitude"]
+
+for col in required_columns:
+    if col not in shops_df.columns:
+        st.error(f"Missing column: {col} in shop dataset")
+        st.stop()
+
+# Convert coordinates safely
+shops_df["latitude"] = pd.to_numeric(shops_df["latitude"], errors="coerce")
+shops_df["longitude"] = pd.to_numeric(shops_df["longitude"], errors="coerce")
+
+# Drop invalid coordinates
+shops_df = shops_df.dropna(subset=["latitude", "longitude"])
 
 # === Streamlit UI ===
 st.title("🔍 Car Part Identifier & Nearby Shop Finder")
@@ -85,7 +100,7 @@ if uploaded_file:
         location = geolocator.geocode(user_location)
 
         if location:
-            user_coords = (location.latitude, location.longitude)
+            user_coords = (float(location.latitude), float(location.longitude))
 
             st.map(pd.DataFrame([{
                 "lat": location.latitude,
@@ -96,19 +111,23 @@ if uploaded_file:
             nearby_shops = []
 
             for _, shop in shops_df.iterrows():
-                shop_coords = (shop["latitude"], shop["longitude"])
-                distance_km = geodesic(user_coords, shop_coords).km
+                try:
+                    shop_coords = (float(shop["latitude"]), float(shop["longitude"]))
+                    distance_km = geodesic(user_coords, shop_coords).km
 
-                if distance_km <= 80:
-                    nearby_shops.append({
-                        "name": shop["name"],
-                        "distance": distance_km
-                    })
+                    if distance_km <= 80:
+                        nearby_shops.append({
+                            "name": shop["name"],
+                            "distance": round(distance_km, 2)
+                        })
+
+                except Exception:
+                    continue
 
             if nearby_shops:
                 for shop in sorted(nearby_shops, key=lambda x: x["distance"]):
                     st.markdown(
-                        f"- **{shop['name']}** — {shop['distance']:.2f} km"
+                        f"- **{shop['name']}** — {shop['distance']} km"
                     )
             else:
                 st.info("No nearby shops found within 80 km.")
